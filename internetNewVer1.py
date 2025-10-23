@@ -1,19 +1,15 @@
-import socket
-import html.parser
-import tkinter as tk
-from tkinter import scrolledtext
 from urllib.parse import urlparse, urljoin
 import ssl 
 from socket import gaierror, timeout, error as socket_error 
 from ssl import SSLError
-import re # リダイレクトヘッダーを解析するために使用
+import re
 
 # --- 1. HTTP/HTTPS通信部分（socket + ssl + リダイレクト） ---
+# User-Agentを一般的なブラウザに偽装してブロックを回避
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36"
+
 def get_html_content(url, redirect_count=0):
-    """
-    指定されたURL (HTTP/HTTPS) から生のHTMLコンテンツをソケット通信で取得します。
-    リダイレクト（3xx）を最大5回まで自動的に処理します。
-    """
+    """リダイレクトとUser-Agent偽装に対応したHTML取得関数。"""
     if redirect_count >= 5:
         return "Error: リダイレクトが多すぎます（無限ループの可能性があります）。"
         
@@ -22,7 +18,6 @@ def get_html_content(url, redirect_count=0):
     path = parsed_url.path if parsed_url.path else "/"
     scheme = parsed_url.scheme
     
-    # URLにスキームがない場合、httpsを試行
     if not scheme and host:
         return get_html_content(f"https://{url}", redirect_count)
     
@@ -48,11 +43,11 @@ def get_html_content(url, redirect_count=0):
             context = ssl.create_default_context()
             sock = context.wrap_socket(sock, server_hostname=host)
 
-        # 3. HTTP GETリクエストを作成し送信
+        # 3. HTTP GETリクエストを作成し送信 (User-Agentを偽装)
         request = (
             f"GET {path} HTTP/1.0\r\n"
             f"Host: {host}\r\n"
-            f"User-Agent: SimplePythonBrowser/1.0\r\n"
+            f"User-Agent: {USER_AGENT}\r\n" # ★★★ 修正箇所：User-Agentを偽装 ★★★
             f"Connection: close\r\n"
             f"\r\n"
         )
@@ -72,7 +67,6 @@ def get_html_content(url, redirect_count=0):
         if header_end == -1:
             return "Error: 無効なHTTPレスポンス形式です。"
 
-        # HTTPステータスコードの取得
         status_line = response_text.split('\r\n')[0]
         try:
             status_code = int(status_line.split()[1])
@@ -86,8 +80,6 @@ def get_html_content(url, redirect_count=0):
             if location_match:
                 new_url_relative = location_match.group(1).strip()
                 new_url = urljoin(url, new_url_relative)
-                
-                # 新しいURLへ再帰的にアクセス
                 return get_html_content(new_url, redirect_count + 1)
             else:
                 return f"Error: リダイレクト ({status_code}) ですが、Locationヘッダーが見つかりませんでした。"
@@ -115,7 +107,7 @@ def get_html_content(url, redirect_count=0):
 
 # --- 2. HTML解析部分（html.parserを使用） ---
 class HyperlinkParser(html.parser.HTMLParser):
-    """HTMLを解析し、Textウィジェットに出力し、リンクを処理するパーサー。"""
+    """全テキスト表示とリンク処理を統合したパーサー（修正済み）。"""
     def __init__(self, output_text_widget, base_url, load_command):
         super().__init__()
         self.output_widget = output_text_widget
@@ -124,14 +116,13 @@ class HyperlinkParser(html.parser.HTMLParser):
         self.in_link = False
         self.link_url = ""
         
-        # current_tagエラー回避と全テキスト表示のための修正
+        # パースエラーと全テキスト表示の修正済みロジック
         self.ignore_depth = 0 
         self.ignore_tags = ('script', 'style', 'head', 'title', 'meta')
 
         self.output_widget.tag_config("link", foreground="blue", underline=1)
         
     def _handle_link_click(self, event):
-        """リンククリック時の処理"""
         index = self.output_widget.index("@%s,%s" % (event.x, event.y))
         
         for tag in self.output_widget.tag_names(index):
@@ -187,13 +178,13 @@ class HyperlinkParser(html.parser.HTMLParser):
 class FullBrowserApp:
     def __init__(self, master):
         self.master = master
-        master.title("鉄オタインターネット (リダイレクト対応)") 
+        master.title("鉄オタインターネット (最終兵器)") 
 
         top_frame = tk.Frame(master)
         top_frame.pack(fill=tk.X, padx=10, pady=5)
         
         self.url_entry = tk.Entry(top_frame, width=70)
-        self.url_entry.insert(0, "https://www.google.com") # 試しにGoogleのトップページへ
+        self.url_entry.insert(0, "https://www.google.com")
         self.url_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         self.go_button = tk.Button(top_frame, text="Go", command=lambda: self.load_page(self.url_entry.get()))
@@ -204,14 +195,13 @@ class FullBrowserApp:
         self.text_area.config(state=tk.DISABLED)
 
         self.text_area.config(state=tk.NORMAL)
-        self.text_area.insert(tk.END, "URLを入力してGoボタンを押してください（リダイレクトに自動対応）。")
+        self.text_area.insert(tk.END, "URLを入力してGoボタンを押してください。ほとんどのサイトが開けるはずです！")
         self.text_area.config(state=tk.DISABLED)
 
 
     def load_page(self, url):
         """指定されたURLのページを読み込むメイン処理"""
         
-        # 画面上のURLを更新する前に、現在のURLを保存
         display_url = url
         self.url_entry.delete(0, tk.END)
         self.url_entry.insert(0, display_url)
@@ -219,12 +209,34 @@ class FullBrowserApp:
         self.text_area.config(state=tk.NORMAL)
         self.text_area.delete(1.0, tk.END)
         self.text_area.insert(tk.END, f"接続中: {display_url}...\n\n", "status")
-        self.text_area.update_idletasks() # UIの強制更新
+        self.text_area.update_idletasks()
 
         html_content = get_html_content(url)
         
         self.text_area.delete(1.0, tk.END)
         
+        if html_content.startswith("Error:"):
+            self.text_area.tag_config("error", foreground="red")
+            self.text_area.insert(tk.END, html_content, "error")
+        else:
+            parser = HyperlinkParser(self.text_area, url, self.load_page)
+            
+            try:
+                parser.feed(html_content)
+            except Exception as e:
+                self.text_area.tag_config("error", foreground="red")
+                self.text_area.insert(tk.END, f"致命的なパースエラー:\n{e}", "error")
+            finally:
+                parser.close()
+
+        self.text_area.config(state=tk.DISABLED)
+
+# アプリの実行
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = FullBrowserApp(root)
+    root.mainloop()
+```eof
         if html_content.startswith("Error:"):
             self.text_area.tag_config("error", foreground="red")
             self.text_area.insert(tk.END, html_content, "error")
