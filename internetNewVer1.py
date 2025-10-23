@@ -13,7 +13,11 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 # --- 1. HTTP/HTTPS通信部分（socket + ssl + リダイレクト） ---
 def get_html_content(url, redirect_count=0):
-    """リダイレクトとUser-Agent偽装に対応したHTML取得関数。"""
+    """
+    リダイレクトとUser-Agent偽装に対応したHTML取得関数。
+    成功時は (HTMLコンテンツ, 最終URL)、失敗時は (エラーメッセージ, 元URL) を返す。
+    """
+    # 無限リダイレクト防止
     if redirect_count >= 5:
         return "Error: リダイレクトが多すぎます（無限ループの可能性があります）。", url
         
@@ -22,9 +26,11 @@ def get_html_content(url, redirect_count=0):
     path = parsed_url.path if parsed_url.path else "/"
     scheme = parsed_url.scheme
     
+    # スキームがなければHTTPSを試行
     if not scheme and host:
         return get_html_content(f"https://{url}", redirect_count)
     
+    # ポートとSSL設定
     if scheme == "https":
         port = 443
         use_ssl = True
@@ -39,8 +45,7 @@ def get_html_content(url, redirect_count=0):
         
     sock = None
     try:
-        # 1. TCPソケットを作成し、接続
-        # タイムアウトを15秒に設定
+        # 1. TCPソケットを作成し、接続 (タイムアウト15秒)
         sock = socket.create_connection((host, port), timeout=15) 
         
         # 2. HTTPSの場合、ソケットをSSLでラップ
@@ -72,6 +77,7 @@ def get_html_content(url, redirect_count=0):
         if header_end == -1:
             return "Error: 無効なHTTPレスポンス形式です。", url
 
+        # ステータスコードの解析
         status_line = response_text.split('\r\n')[0]
         try:
             status_code = int(status_line.split()[1])
@@ -86,8 +92,7 @@ def get_html_content(url, redirect_count=0):
                 new_url_relative = location_match.group(1).strip()
                 new_url = urljoin(url, new_url_relative)
                 
-                # 新しいURLで再帰的にアクセスし、その結果と最終URLを返す
-                # ここで結果のタプルをアンパックして返す
+                # 新しいURLで再帰的にアクセス
                 return get_html_content(new_url, redirect_count + 1)
             else:
                 return f"Error: リダイレクト ({status_code}) ですが、Locationヘッダーが見つかりませんでした。", url
@@ -96,7 +101,7 @@ def get_html_content(url, redirect_count=0):
         if status_code != 200:
              return f"Error: HTTPステータスコードエラー ({status_code})\n\n--- レスポンスヘッダー --- \n{response_text[:header_end]}", url
              
-        # 成功した場合、HTMLコンテンツと最終アクセスしたURLを返す
+        # 成功
         return response_text[header_end + 4:], url
 
     except gaierror:
@@ -116,7 +121,7 @@ def get_html_content(url, redirect_count=0):
 
 # --- 2. HTML解析部分（html.parserを使用） ---
 class HyperlinkParser(html.parser.HTMLParser):
-    """全テキスト表示とリンク処理を統合したパーサー。"""
+    """全テキスト表示とリンク処理を統合したパーサー（パースエラー修正済み）。"""
     def __init__(self, output_text_widget, base_url, load_command):
         super().__init__()
         self.output_widget = output_text_widget
@@ -124,6 +129,7 @@ class HyperlinkParser(html.parser.HTMLParser):
         self.load_command = load_command
         self.in_link = False
         self.link_url = ""
+        # パースエラー修正のため、タグの深さを管理
         self.ignore_depth = 0 
         self.ignore_tags = ('script', 'style', 'head', 'title', 'meta')
 
@@ -140,6 +146,7 @@ class HyperlinkParser(html.parser.HTMLParser):
                 break
 
     def handle_starttag(self, tag, attrs):
+        # 無視タグの深さをインクリメント
         if tag in self.ignore_tags:
             self.ignore_depth += 1
 
@@ -151,10 +158,12 @@ class HyperlinkParser(html.parser.HTMLParser):
             if href:
                 self.link_url = urljoin(self.base_url, href)
 
+        # 無視タグの中にいない場合のみ改行
         elif tag in ('p', 'div', 'br', 'h1', 'h2', 'h3') and self.ignore_depth == 0:
             self.output_widget.insert(tk.END, '\n\n')
 
     def handle_endtag(self, tag):
+        # 無視タグの深さをデクリメント
         if tag in self.ignore_tags and self.ignore_depth > 0:
             self.ignore_depth -= 1
 
@@ -162,11 +171,13 @@ class HyperlinkParser(html.parser.HTMLParser):
             self.in_link = False
             self.link_url = ""
         
+        # 無視タグの中にいない場合のみ改行
         elif tag in ('p', 'div') and self.ignore_depth == 0:
             self.output_widget.insert(tk.END, '\n\n')
 
 
     def handle_data(self, data):
+        # 無視タグの中にいない場合のみデータ処理
         if self.ignore_depth == 0: 
             cleaned_data = ' '.join(data.split())
             if not cleaned_data:
@@ -203,7 +214,7 @@ class FullBrowserApp:
         self.text_area.config(state=tk.DISABLED)
 
         self.text_area.config(state=tk.NORMAL)
-        self.text_area.insert(tk.END, "URLを入力してGoボタンを押してください。")
+        self.text_area.insert(tk.END, "URLを入力してGoボタンを押してください。これが全対策済みの最終バージョンです！")
         self.text_area.config(state=tk.DISABLED)
 
 
@@ -216,15 +227,15 @@ class FullBrowserApp:
         self.text_area.insert(tk.END, f"接続中: {url}...\n\n", "status")
         self.text_area.update_idletasks()
 
-        # get_html_contentはHTMLコンテンツと最終URLのタプルを返す
+        # get_html_contentは (HTMLコンテンツ, 最終URL) のタプルを返す
         result_tuple = get_html_content(url)
         
         if isinstance(result_tuple, tuple) and len(result_tuple) == 2:
             html_content, final_url = result_tuple
         else:
-            # エラーの場合は文字列が直接返ってくる
-            html_content = result_tuple
-            final_url = url # エラー時は元のURLをそのまま使用
+            # 万が一の予期せぬエラー時に備えて
+            html_content = str(result_tuple)
+            final_url = url 
 
         # URLエントリーを最終URLまたは元のURLで更新
         self.url_entry.delete(0, tk.END)
@@ -236,6 +247,7 @@ class FullBrowserApp:
             self.text_area.tag_config("error", foreground="red")
             self.text_area.insert(tk.END, html_content, "error")
         else:
+            # 成功した場合は最終URLをベースURLとしてパーサーに渡す
             parser = HyperlinkParser(self.text_area, final_url, self.load_page)
             
             try:
